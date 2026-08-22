@@ -80,6 +80,7 @@ if [[ "$ROLE" == "api" ]]; then
   cp "${SCRIPT_DIR}/api/server.js" "${INSTALL_DIR}/server.js"
   cp "${SCRIPT_DIR}/api/store.js" "${INSTALL_DIR}/store.js"
   cp "${SCRIPT_DIR}/api/serverStore.js" "${INSTALL_DIR}/serverStore.js"
+  cp "${SCRIPT_DIR}/api/rateLimiter.js" "${INSTALL_DIR}/rateLimiter.js"
   cp "${SCRIPT_DIR}/api/package.json" "${INSTALL_DIR}/package.json"
   cp -r "${SCRIPT_DIR}/api/public" "${INSTALL_DIR}/public"
 
@@ -108,7 +109,31 @@ EOF
   systemctl daemon-reload
   systemctl enable easyvpn-api
   systemctl restart easyvpn-api
-  sleep 2 # give it a moment to generate its admin key on first boot
+  sleep 2 # give it a moment to start and generate its admin key on first boot
+
+  # Actually verify the service is alive and answering, rather than just
+  # assuming success -- a crashed/crash-looping service (e.g. a missing file)
+  # would otherwise go unnoticed here, since data/admin.config.json can
+  # persist from an earlier successful run even while the CURRENT one is
+  # broken, which previously made this check falsely report success.
+  if ! systemctl is-active --quiet easyvpn-api; then
+    echo ""
+    echo "############################################################"
+    echo " FAILED: the easyvpn-api service did not start. Recent logs:"
+    echo "############################################################"
+    journalctl -u easyvpn-api --no-pager -n 30
+    exit 1
+  fi
+  if ! curl -s -f "http://localhost:${API_PORT}/api/health" > /dev/null; then
+    echo ""
+    echo "############################################################"
+    echo " FAILED: the service is running but isn't answering on port"
+    echo " ${API_PORT}. Recent logs:"
+    echo "############################################################"
+    journalctl -u easyvpn-api --no-pager -n 30
+    exit 1
+  fi
+  echo "==> Verified: the API is running and responding."
 
   # NOTE: allow rules alone do nothing until ufw is actually enabled -- unlike
   # the node role below, a fresh VPS image typically has no firewall active
@@ -260,6 +285,29 @@ EOF
 systemctl daemon-reload
 systemctl enable easyvpn-agent
 systemctl restart easyvpn-agent
+sleep 1
+
+# Actually verify the agent started, rather than assuming success and only
+# finding out later when registration with the brain fails with a confusing
+# error -- same reasoning as the equivalent check in the api role above.
+if ! systemctl is-active --quiet easyvpn-agent; then
+  echo ""
+  echo "############################################################"
+  echo " FAILED: the easyvpn-agent service did not start. Recent logs:"
+  echo "############################################################"
+  journalctl -u easyvpn-agent --no-pager -n 30
+  exit 1
+fi
+if ! curl -s -f "http://localhost:${AGENT_PORT}/health" > /dev/null; then
+  echo ""
+  echo "############################################################"
+  echo " FAILED: the agent is running but isn't answering on port"
+  echo " ${AGENT_PORT}. Recent logs:"
+  echo "############################################################"
+  journalctl -u easyvpn-agent --no-pager -n 30
+  exit 1
+fi
+echo "==> Verified: the agent is running and responding."
 
 # Restrict the agent port to ONLY the brain API's IP, extracted from --api-url,
 # rather than opening it to the whole internet -- nobody else has any reason
