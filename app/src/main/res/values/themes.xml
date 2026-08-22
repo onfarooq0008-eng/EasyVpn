@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.EasyVPN" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorPrimaryDark">@color/primaryDark</item>
+        <item name="colorAccent">@color/accent</item>
+        <item name="android:statusBarColor">@color/primaryDark</item>
+    </style>
+
+    <style name="Theme.EasyVPN.Splash" parent="Theme.EasyVPN">
+        <item name="android:windowBackground">@color/primary</item>
+    </style>
+</resources>
