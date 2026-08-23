@@ -9,7 +9,7 @@ import com.easyvpn.app.databinding.ActivityDiagnosticsBinding
 import com.easyvpn.app.util.ConnectivityCheckUtil
 import com.easyvpn.app.util.PingUtil
 import com.easyvpn.app.util.VpnStateUtil
-import com.easyvpn.app.vpn.VpnTunnelManager
+import com.easyvpn.app.vpn.VpnTunnelManagerHolder
 import kotlinx.coroutines.launch
 
 /**
@@ -40,14 +40,14 @@ class DiagnosticsActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             val lines = mutableListOf<String>()
-            val tunnelManager = VpnTunnelManager(this@DiagnosticsActivity)
+            val tunnelManager = VpnTunnelManagerHolder.get(this@DiagnosticsActivity)
             val systemVpnActive = VpnStateUtil.isSystemVpnActive(this@DiagnosticsActivity)
             tunnelManager.syncStateFromSystem(systemVpnActive)
 
             lines += "VPN interface: ${if (systemVpnActive) "UP" else "DOWN"}"
 
             if (systemVpnActive) {
-                val working = ConnectivityCheckUtil.verifyInternetThroughVpn(this@DiagnosticsActivity, timeoutMs = 6000)
+                val working = ConnectivityCheckUtil.verifyInternetThroughVpnWithRetries(this@DiagnosticsActivity)
                 lines += "Internet through tunnel: ${if (working) "OK ✓" else "FAILED ✗ (interface is up, but no traffic is actually getting through -- likely a server-side routing/firewall problem)"}"
 
                 val stats = tunnelManager.statistics()

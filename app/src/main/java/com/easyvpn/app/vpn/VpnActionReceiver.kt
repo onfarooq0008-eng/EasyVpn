@@ -11,7 +11,11 @@ import kotlinx.coroutines.launch
 /**
  * Handles the "Disconnect" button on the persistent connected notification --
  * this can fire even if MainActivity isn't currently open, so it talks to
- * VpnTunnelManager directly rather than routing through the Activity.
+ * VpnTunnelManager directly rather than routing through the Activity. Uses
+ * VpnTunnelManagerHolder to get the SAME shared instance the rest of the app
+ * uses -- GoBackend tracks which tunnel handle is running as private instance
+ * state, so a brand new GoBackend created here wouldn't actually have a real
+ * handle to tear down, even after telling it the tunnel is up.
  */
 class VpnActionReceiver : BroadcastReceiver() {
 
@@ -25,9 +29,11 @@ class VpnActionReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val tunnelManager = VpnTunnelManager(context.applicationContext)
-                // A fresh manager doesn't know the tunnel is up yet -- tell it, so
-                // disconnect() actually has a tunnel reference to bring down.
+                val tunnelManager = VpnTunnelManagerHolder.get(context)
+                // Defensive fallback only -- if this is really the shared instance
+                // that brought the tunnel up, its state is already correct and this
+                // is a no-op. Only matters if this receiver somehow fires before
+                // anything else in the app has touched the holder this process.
                 tunnelManager.syncStateFromSystem(isActive = true)
                 tunnelManager.disconnect()
             } finally {

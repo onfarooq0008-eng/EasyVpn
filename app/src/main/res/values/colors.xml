@@ -14,5 +14,9 @@
     <color name="statusOffline">#C62828</color>
     <color name="statusChecking">#8A8A8A</color>
     <color name="danger">#C62828</color>
+
+    <!-- App icon background only; not part of the in-app light/dark theme,
+         intentionally fixed to match the launcher artwork's own dark navy. -->
+    <color name="launcherBackground">#00091F</color>
 </resources>
 

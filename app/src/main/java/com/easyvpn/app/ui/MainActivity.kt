@@ -29,6 +29,7 @@ import com.easyvpn.app.util.SecureKeyStore
 import com.easyvpn.app.util.VpnStateUtil
 import com.easyvpn.app.vpn.TunnelState
 import com.easyvpn.app.vpn.VpnTunnelManager
+import com.easyvpn.app.vpn.VpnTunnelManagerHolder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -76,7 +77,7 @@ class MainActivity : AppCompatActivity() {
         serverSource = ServerSource(this)
         appSettings = AppSettings(this)
         keyStore = SecureKeyStore(this)
-        tunnelManager = VpnTunnelManager(this)
+        tunnelManager = VpnTunnelManagerHolder.get(this)
 
         binding.recyclerServers.layoutManager = LinearLayoutManager(this)
         adapter = HomeListAdapter(
@@ -341,7 +342,7 @@ class MainActivity : AppCompatActivity() {
             result.onSuccess {
                 // The interface coming up doesn't prove it actually works -- verify
                 // real traffic flows through it before declaring success to the user.
-                val working = com.easyvpn.app.util.ConnectivityCheckUtil.verifyInternetThroughVpn(this@MainActivity)
+                val working = com.easyvpn.app.util.ConnectivityCheckUtil.verifyInternetThroughVpnWithRetries(this@MainActivity)
                 if (working) {
                     connectedServer = server
                     appSettings.lastConnectedServerId = server.id
