@@ -26,7 +26,21 @@ if [ -z "$CLIENT_PUB" ] || [ -z "$CLIENT_IP" ]; then
 fi
 
 wg set ${WG_IFACE} peer "${CLIENT_PUB}" allowed-ips "${CLIENT_IP}"
-wg-quick save ${WG_IFACE} 2>/dev/null || wg showconf ${WG_IFACE} > /etc/wireguard/${WG_IFACE}.conf.new
+
+if wg-quick save ${WG_IFACE}; then
+  echo "Peer applied and saved to /etc/wireguard/${WG_IFACE}.conf (persists across reboots)."
+else
+  # Deliberately NOT falling back to `wg showconf > ${WG_IFACE}.conf` here: that
+  # only dumps the live [Interface]/[Peer] runtime state, not the wg-quick-only
+  # directives (Address, PostUp, PostDown, DNS, ...) that the real config needs --
+  # writing it over the real file would silently break routing/NAT on next boot.
+  echo "" >&2
+  echo "WARNING: peer is active right now, but 'wg-quick save ${WG_IFACE}' failed" >&2
+  echo "(see the error above), so it will NOT survive a reboot or a" >&2
+  echo "'systemctl restart wg-quick@${WG_IFACE}' until you resolve that and re-run:" >&2
+  echo "  sudo wg-quick save ${WG_IFACE}" >&2
+  echo "" >&2
+fi
 
 echo "Added peer ${CLIENT_PUB} -> ${CLIENT_IP} on ${WG_IFACE}."
 echo "Current peers:"

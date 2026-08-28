@@ -100,6 +100,87 @@
 
         <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#E0E0E0" android:layout_marginTop="16dp" />
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DNS"
+            android:textStyle="bold"
+            android:layout_marginTop="16dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Choose the DNS resolver used inside the tunnel"
+            android:textColor="@color/gray"
+            android:textSize="12sp"
+            android:layout_marginTop="2dp" />
+
+        <RadioGroup
+            android:id="@+id/radioGroupDns"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="8dp">
+
+            <RadioButton
+                android:id="@+id/radioDnsServer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Server default" />
+
+            <RadioButton
+                android:id="@+id/radioDnsGoogle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Google (8.8.8.8, 8.8.4.4)" />
+
+            <RadioButton
+                android:id="@+id/radioDnsCloudflare"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Cloudflare (1.1.1.1, 1.0.0.1)" />
+
+            <RadioButton
+                android:id="@+id/radioDnsAdblock"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Ad Block · Fast DNS (AdGuard)" />
+
+            <RadioButton
+                android:id="@+id/radioDnsCustom"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Custom" />
+        </RadioGroup>
+
+        <LinearLayout
+            android:id="@+id/layoutCustomDns"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="6dp"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/editCustomDns"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="e.g. 9.9.9.9, 149.112.112.112"
+                android:inputType="text"
+                android:maxLines="1" />
+
+            <Button
+                android:id="@+id/buttonSaveCustomDns"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="Save" />
+        </LinearLayout>
+
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#E0E0E0" android:layout_marginTop="16dp" />
+
         <Button
             android:id="@+id/buttonSplitTunneling"
             android:layout_width="match_parent"

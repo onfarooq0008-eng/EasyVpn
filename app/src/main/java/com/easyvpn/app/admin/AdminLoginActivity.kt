@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import com.easyvpn.app.databinding.ActivityAdminLoginBinding
+import com.easyvpn.app.util.applyEdgeToEdgeInsets
 
 /**
  * Simple password gate so random users who long-press the version text can't
@@ -18,6 +19,7 @@ class AdminLoginActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityAdminLoginBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        applyEdgeToEdgeInsets(binding.root)
 
         binding.buttonLogin.setOnClickListener {
             val entered = binding.editPassword.text.toString()

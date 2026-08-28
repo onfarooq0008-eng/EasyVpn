@@ -6,6 +6,7 @@ import androidx.appcompat.app.AppCompatActivity
 import com.easyvpn.app.data.Server
 import com.easyvpn.app.data.ServerRepository
 import com.easyvpn.app.databinding.ActivityAddEditServerBinding
+import com.easyvpn.app.util.applyEdgeToEdgeInsets
 
 class AddEditServerActivity : AppCompatActivity() {
 
@@ -19,6 +20,7 @@ class AddEditServerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityAddEditServerBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        applyEdgeToEdgeInsets(binding.root)
         repo = ServerRepository(this)
 
         val id = intent.getStringExtra(EXTRA_SERVER_ID)

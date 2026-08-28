@@ -5,7 +5,13 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.wireguard.crypto.KeyPair
 
-/** Generates the device's WireGuard key pair once, stores the private key encrypted-at-rest. */
+/** Generates the device's WireGuard key pair once, stores the private key encrypted-at-rest.
+ *
+ *  Uses EncryptedSharedPreferences/MasterKey, which security-crypto 1.1.0 deprecates in
+ *  favor of Jetpack DataStore + Tink. Left as-is here since the deprecated APIs are still
+ *  fully functional and migrating would require a data migration for already-stored keys
+ *  (so existing installs don't lose their WireGuard identity) -- worth planning as its own
+ *  change rather than folding it into an unrelated dependency bump. */
 class SecureKeyStore(context: Context) {
 
     private val masterKey = MasterKey.Builder(context)

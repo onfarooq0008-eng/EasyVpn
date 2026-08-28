@@ -11,6 +11,7 @@ import com.easyvpn.app.databinding.ActivitySplitTunnelBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.easyvpn.app.util.applyEdgeToEdgeInsets
 
 class SplitTunnelActivity : AppCompatActivity() {
 
@@ -22,6 +23,7 @@ class SplitTunnelActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivitySplitTunnelBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        applyEdgeToEdgeInsets(binding.root)
         setSupportActionBar(binding.toolbar)
         binding.toolbar.setNavigationOnClickListener { finish() }
 

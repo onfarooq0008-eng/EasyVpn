@@ -11,6 +11,7 @@ import com.easyvpn.app.data.Server
 import com.easyvpn.app.data.ServerRepository
 import com.easyvpn.app.databinding.ActivityAdminPanelBinding
 import kotlinx.coroutines.launch
+import com.easyvpn.app.util.applyEdgeToEdgeInsets
 
 class AdminPanelActivity : AppCompatActivity() {
 
@@ -23,6 +24,7 @@ class AdminPanelActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityAdminPanelBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        applyEdgeToEdgeInsets(binding.root)
         title = "Admin Panel — Manage Servers"
 
         repo = ServerRepository(this)

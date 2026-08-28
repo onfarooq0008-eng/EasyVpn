@@ -33,6 +33,7 @@ import com.easyvpn.app.vpn.VpnTunnelManagerHolder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.easyvpn.app.util.applyEdgeToEdgeInsets
 
 /**
  * Home screen: servers grouped by country, tap a country with 2+ servers to
@@ -72,6 +73,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        applyEdgeToEdgeInsets(binding.root)
         setSupportActionBar(binding.toolbar)
 
         serverSource = ServerSource(this)
@@ -332,6 +334,11 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
             }
+
+            // Apply the user's DNS preference (Settings -> DNS) on top of whatever
+            // the server itself specifies -- "Server default" leaves connectServer.dns
+            // untouched; any other mode substitutes the chosen resolver.
+            connectServer = connectServer.copy(dns = appSettings.resolveDns(connectServer.dns))
 
             val result = tunnelManager.connect(
                 connectServer,

@@ -26,7 +26,7 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.EasyVPN"
-        tools:targetApi="34">
+        tools:targetApi="36">
 
         <!-- TODO: replace with your real AdMob App ID from AdMob console before release -->
         <meta-data

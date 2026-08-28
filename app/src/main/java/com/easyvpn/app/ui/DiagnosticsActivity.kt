@@ -11,6 +11,7 @@ import com.easyvpn.app.util.PingUtil
 import com.easyvpn.app.util.VpnStateUtil
 import com.easyvpn.app.vpn.VpnTunnelManagerHolder
 import kotlinx.coroutines.launch
+import com.easyvpn.app.util.applyEdgeToEdgeInsets
 
 /**
  * On-demand diagnostics -- for the user to self-check ("why isn't this
@@ -26,6 +27,7 @@ class DiagnosticsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityDiagnosticsBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        applyEdgeToEdgeInsets(binding.root)
         setSupportActionBar(binding.toolbar)
         binding.toolbar.setNavigationOnClickListener { finish() }
         binding.toolbar.title = "Connection diagnostics"
@@ -63,6 +65,7 @@ class DiagnosticsActivity : AppCompatActivity() {
             lines += "Backend mode: ${if (appSettings.backendApiUrl.isNotBlank()) "ON (${appSettings.backendApiUrl})" else "OFF (local server list)"}"
             lines += "Last connected server id: ${appSettings.lastConnectedServerId ?: "none"}"
             lines += "Kill switch preference: ${if (appSettings.killSwitchEnabled) "ON" else "OFF"}"
+            lines += "DNS: ${appSettings.dnsMode} (${appSettings.resolveDns("server default")})"
             lines += "Split tunneling exclusions: ${appSettings.excludedPackages.size} app(s)"
 
             lines += ""

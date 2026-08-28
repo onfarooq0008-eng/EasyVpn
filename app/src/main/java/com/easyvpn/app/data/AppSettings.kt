@@ -55,6 +55,34 @@ class AppSettings(context: Context) {
     /** True if this device is using the compiled-in default rather than a manual override. */
     fun isUsingDefaultBackend(): Boolean = (prefs.getString("backend_api_url", "") ?: "").isBlank()
 
+    /**
+     * DNS used inside the tunnel. "server" (default) keeps whatever the connected
+     * server itself specifies (Server.dns / the backend's per-server default).
+     * The rest override it: "google", "cloudflare", "adblock" (AdGuard DNS -- blocks
+     * ads/trackers), or "custom" (see [customDns]). Applied on top of the server's
+     * own value right before connecting -- see [resolveDns].
+     */
+    var dnsMode: String
+        get() = prefs.getString("dns_mode", "server") ?: "server"
+        set(value) = prefs.edit().putString("dns_mode", value).apply()
+
+    /** User-entered DNS server(s) for dnsMode == "custom", e.g. "9.9.9.9" or "9.9.9.9, 149.112.112.112". */
+    var customDns: String
+        get() = prefs.getString("custom_dns", "") ?: ""
+        set(value) = prefs.edit().putString("custom_dns", value.trim()).apply()
+
+    /** Resolves [dnsMode] against the connecting server's own default ([serverDns]).
+     *  Falls back to [serverDns] for "server" mode, and also for "custom" mode if
+     *  no custom value has been saved yet (so an empty custom field never breaks
+     *  the connection -- it just behaves like "server default" until filled in). */
+    fun resolveDns(serverDns: String): String = when (dnsMode) {
+        "google" -> "8.8.8.8, 8.8.4.4"
+        "cloudflare" -> "1.1.1.1, 1.0.0.1"
+        "adblock" -> "94.140.14.14, 94.140.15.15" // AdGuard DNS Default -- ad/tracker blocking, no signup needed
+        "custom" -> customDns.ifBlank { serverDns }
+        else -> serverDns
+    }
+
     /** The raw per-device override only (empty if none set) -- unlike [backendApiUrl], this does
      *  NOT fall back to the compiled-in default. Used by the Admin Panel to show what's actually
      *  been typed into the override field, without duplicating the underlying pref name/key
