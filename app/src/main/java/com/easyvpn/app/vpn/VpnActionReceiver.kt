@@ -30,11 +30,22 @@ class VpnActionReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val tunnelManager = VpnTunnelManagerHolder.get(context)
-                // Defensive fallback only -- if this is really the shared instance
-                // that brought the tunnel up, its state is already correct and this
-                // is a no-op. Only matters if this receiver somehow fires before
-                // anything else in the app has touched the holder this process.
-                tunnelManager.syncStateFromSystem(isActive = true)
+                // Only reconstruct a Tunnel handle if this instance genuinely
+                // doesn't have one -- e.g. the whole app process was killed and
+                // this receiver is the first thing to touch the holder since.
+                // If it's already UP, tunnelManager already holds the REAL
+                // handle that brought the tunnel up (this is normally the same
+                // shared instance MainActivity used to connect): calling
+                // syncStateFromSystem() here too would replace that real
+                // handle with a brand new Tunnel object GoBackend never
+                // actually associated with the running tunnel, so disconnect()
+                // right after would tear down the wrong (non-existent) handle
+                // and silently leave the real tunnel running. This was exactly
+                // why tapping Disconnect from the notification looked like it
+                // did nothing.
+                if (tunnelManager.state != TunnelState.UP) {
+                    tunnelManager.syncStateFromSystem(isActive = true)
+                }
                 tunnelManager.disconnect()
             } finally {
                 NotificationHelper.clear(context.applicationContext)
