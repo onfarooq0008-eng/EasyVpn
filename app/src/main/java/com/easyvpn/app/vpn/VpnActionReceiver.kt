@@ -30,25 +30,17 @@ class VpnActionReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val tunnelManager = VpnTunnelManagerHolder.get(context)
-                // Only reconstruct a Tunnel handle if this instance genuinely
-                // doesn't have one -- e.g. the whole app process was killed and
-                // this receiver is the first thing to touch the holder since.
-                // If it's already UP, tunnelManager already holds the REAL
-                // handle that brought the tunnel up (this is normally the same
-                // shared instance MainActivity used to connect): calling
-                // syncStateFromSystem() here too would replace that real
-                // handle with a brand new Tunnel object GoBackend never
-                // actually associated with the running tunnel, so disconnect()
-                // right after would tear down the wrong (non-existent) handle
-                // and silently leave the real tunnel running. This was exactly
-                // why tapping Disconnect from the notification looked like it
-                // did nothing.
-                if (tunnelManager.state != TunnelState.UP) {
-                    tunnelManager.syncStateFromSystem(isActive = true)
+                // Do not manufacture a Tunnel object from the Android VPN UI
+                // state. GoBackend owns the real Tunnel object and only that
+                // object can be used to tear down the userspace WireGuard
+                // tunnel. The holder gives this receiver the same manager
+                // instance used by MainActivity.
+                tunnelManager.syncStateFromBackend()
+                val result = tunnelManager.disconnect()
+                if (result.isSuccess) {
+                    NotificationHelper.clear(context.applicationContext)
                 }
-                tunnelManager.disconnect()
             } finally {
-                NotificationHelper.clear(context.applicationContext)
                 pendingResult.finish()
             }
         }

@@ -144,7 +144,7 @@ class MainActivity : AppCompatActivity() {
         // backgrounded/recreated while still connected, resync to reality instead of
         // wrongly showing "Not connected" just because our in-memory state reset.
         val systemActive = VpnStateUtil.isSystemVpnActive(this)
-        tunnelManager.syncStateFromSystem(systemActive)
+        tunnelManager.syncStateFromBackend()
         if (systemActive && connectedServer == null) {
             appSettings.lastConnectedServerId?.let { id ->
                 allServers.find { it.id == id }?.let {
@@ -316,7 +316,7 @@ class MainActivity : AppCompatActivity() {
             val privateKey = keyStore.clientPrivateKeyBase64()
 
             var connectServer = server
-            var addressOverride: String? = null
+            var assignedAddressCidr: String? = null
 
             if (serverSource.isBackendMode()) {
                 try {
@@ -328,11 +328,20 @@ class MainActivity : AppCompatActivity() {
                         serverPublicKey = reg.serverPublicKey,
                         dns = reg.dns
                     )
-                    addressOverride = "${reg.assignedAddress}/32"
+                    assignedAddressCidr = "${reg.assignedAddress}/32"
                 } catch (e: Exception) {
                     tryNextOrFail(chain, attemptIndex, "Registration failed: ${e.message}")
                     return@launch
                 }
+            } else {
+                // Production connections must use the backend allocator. The old
+                // client-side hash allocator has been removed because it can collide.
+                tryNextOrFail(
+                    chain,
+                    attemptIndex,
+                    "Automatic server registration is required. Configure the Backend API in Admin Panel."
+                )
+                return@launch
             }
 
             // Apply the user's DNS preference (Settings -> DNS) on top of whatever
@@ -344,7 +353,7 @@ class MainActivity : AppCompatActivity() {
                 connectServer,
                 privateKey,
                 excludedPackages = appSettings.excludedPackages,
-                assignedAddressOverride = addressOverride
+                assignedAddressCidr = assignedAddressCidr!!
             )
             result.onSuccess {
                 // The interface coming up doesn't prove it actually works -- verify

@@ -6,11 +6,6 @@ import android.content.Context
 class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("easyvpn_settings", Context.MODE_PRIVATE)
 
-    /** When on, block all non-VPN traffic if the tunnel drops unexpectedly. */
-    var killSwitchEnabled: Boolean
-        get() = prefs.getBoolean("kill_switch", false)
-        set(value) = prefs.edit().putBoolean("kill_switch", value).apply()
-
     /** When on, connect to the last-used (or fastest) server automatically on app launch. */
     var autoConnectEnabled: Boolean
         get() = prefs.getBoolean("auto_connect", false)

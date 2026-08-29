@@ -2,7 +2,6 @@ package com.easyvpn.app.vpn
 
 import android.content.Context
 import com.easyvpn.app.data.Server
-import com.easyvpn.app.util.DeviceAddressUtil
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
@@ -15,12 +14,15 @@ enum class TunnelState { DOWN, CONNECTING, UP }
 
 /**
  * Thin wrapper around the official com.wireguard.android GoBackend.
- * The client's own private key is generated once on-device and never leaves it;
- * you only need to register its PUBLIC key (and its derived tunnel address --
- * see DeviceAddressUtil) as a peer on each VPS (see server-setup/add-client.sh
- * and README for the exact command).
+ * The client's own private key is generated once on-device and never leaves it.
+ * In production/backend mode the control API allocates the client tunnel IP
+ * atomically and returns it with the server configuration.
  */
 class VpnTunnelManager(private val context: Context) {
+
+    companion object {
+        const val TUNNEL_NAME = "easyvpn"
+    }
 
     private val backend = GoBackend(context)
     private var currentTunnel: SimpleTunnel? = null
@@ -40,21 +42,22 @@ class VpnTunnelManager(private val context: Context) {
         server: Server,
         clientPrivateKeyBase64: String,
         excludedPackages: Set<String> = emptySet(),
-        assignedAddressOverride: String? = null
+        assignedAddressCidr: String
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             state = TunnelState.CONNECTING
             val peerPublicKey = com.wireguard.crypto.Key.fromBase64(server.serverPublicKey)
 
-            // If a backend API assigned this device's address (see /backend), use that exact
-            // value -- it's authoritative and guaranteed unique. Otherwise fall back to the
-            // local hash-derived address for manual/local-only setups (see DeviceAddressUtil).
-            val myAddress = assignedAddressOverride
-                ?: DeviceAddressUtil.deviceAddressCidr(server.clientAddress, clientPrivateKeyBase64)
+            // The tunnel address MUST come from the server-side allocator.
+            // Client-side/hash-derived allocation was removed because it can collide
+            // between different devices and is not authoritative for WireGuard peers.
+            require(assignedAddressCidr.isNotBlank()) {
+                "A server-assigned tunnel address is required"
+            }
 
             val ifaceBuilder = Interface.Builder()
                 .parsePrivateKey(clientPrivateKeyBase64)
-                .parseAddresses(myAddress)
+                .parseAddresses(assignedAddressCidr)
                 .parseDnsServers(server.dns)
 
             if (excludedPackages.isNotEmpty()) {
@@ -76,9 +79,9 @@ class VpnTunnelManager(private val context: Context) {
                 .addPeer(peerBuilder.build())
                 .build()
 
-            val tunnel = SimpleTunnel("easyvpn")
-            currentTunnel = tunnel
+            val tunnel = SimpleTunnel(TUNNEL_NAME)
             backend.setState(tunnel, Tunnel.State.UP, config)
+            currentTunnel = tunnel
             state = TunnelState.UP
             Result.success(Unit)
         } catch (e: Exception) {
@@ -90,6 +93,7 @@ class VpnTunnelManager(private val context: Context) {
     suspend fun disconnect(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             currentTunnel?.let { backend.setState(it, Tunnel.State.DOWN, null) }
+            currentTunnel = null
             state = TunnelState.DOWN
             Result.success(Unit)
         } catch (e: Exception) {
@@ -98,21 +102,38 @@ class VpnTunnelManager(private val context: Context) {
     }
 
     /**
-     * Call after (re)creating this manager (e.g. Activity restarted after being
-     * backgrounded) to catch up with reality: the actual tunnel is owned by the
-     * OS-level VpnService and keeps running independently of our Activity, but a
-     * fresh VpnTunnelManager instance otherwise starts assuming state = DOWN
-     * regardless of what's really happening. See VpnStateUtil.isSystemVpnActive.
+     * Synchronize our in-memory state with this manager's GoBackend.
+     *
+     * GoBackend deliberately keeps the active Tunnel as an object reference.
+     * Therefore we must never manufacture a new SimpleTunnel merely because
+     * Android reports that some VPN interface is active: doing so creates a
+     * fake handle that GoBackend does not own and makes disconnect() a no-op.
+     *
+     * VpnTunnelManagerHolder guarantees that all app components in the same
+     * process use this manager/backend instance. If the process itself was
+     * killed, the GoBackend/VpnService state is gone as well and the correct
+     * state for a new manager is DOWN.
      */
-    fun syncStateFromSystem(isActive: Boolean) {
-        if (isActive) {
-            currentTunnel = SimpleTunnel("easyvpn") // GoBackend keys by name, so this is safe to recreate
-            state = TunnelState.UP
-        } else {
-            currentTunnel = null
-            state = TunnelState.DOWN
+    fun syncStateFromBackend(): TunnelState {
+        return try {
+            val running = backend.getRunningTunnelNames().contains(TUNNEL_NAME)
+            state = if (running && currentTunnel != null) {
+                TunnelState.UP
+            } else {
+                // If this manager does not own the backend tunnel handle, it
+                // cannot safely disconnect it. Do not invent a replacement
+                // Tunnel object; report the backend state only when we also
+                // have the real handle.
+                if (!running) currentTunnel = null
+                TunnelState.DOWN
+            }
+            state
+        } catch (_: Exception) {
+            state = if (currentTunnel != null) TunnelState.UP else TunnelState.DOWN
+            state
         }
     }
+
 
     fun statistics() = currentTunnel?.let { runCatching { backend.getStatistics(it) }.getOrNull() }
 }

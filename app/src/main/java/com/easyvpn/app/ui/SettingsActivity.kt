@@ -34,17 +34,12 @@ class SettingsActivity : AppCompatActivity() {
             settings.autoConnectEnabled = checked
         }
 
-        binding.switchKillSwitch.isChecked = settings.killSwitchEnabled
-        binding.switchKillSwitch.setOnCheckedChangeListener { _, checked ->
-            settings.killSwitchEnabled = checked
-            if (checked) {
-                Toast.makeText(
-                    this,
-                    "For a true system-level kill switch, also turn on \"Block connections without VPN\" for EasyVPN in system VPN settings.",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
+        // A real kill switch is Android's VPN lockdown mode. Apps cannot
+        // programmatically enable it, so do not expose a local preference that
+        // falsely claims the kill switch is active. The button below opens the
+        // system VPN settings where the user can enable "Block connections
+        // without VPN" for EasyVPN.
+
 
         // Android only lets the *user* (not the app itself) turn on true lockdown
         // mode; that's deliberate OS security design, not a library limitation.

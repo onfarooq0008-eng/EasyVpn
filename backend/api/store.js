@@ -1,17 +1,33 @@
-// Tiny file-backed store -- no database server to install or manage. Fine at
-// this scale (the API is only called once per device on first launch, or
-// again if you build a "server ever changes" retry, not per-connection).
+// Tiny file-backed store -- no database server to install or manage. The
+// allocator below uses a process-wide async mutex plus persisted reservations
+// so concurrent registration requests cannot receive the same WireGuard IP.
 const fs = require('fs');
 const path = require('path');
 
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_PATH = path.join(DATA_DIR, 'store.json');
 
+// Node's event loop can interleave async requests between load() and save().
+// Keep all allocation mutations in one critical section. The API is a single
+// Node process, so this protects concurrent HTTP requests without a database.
+let mutationQueue = Promise.resolve();
+
+function withMutationLock(fn) {
+  const run = mutationQueue.then(fn, fn);
+  mutationQueue = run.catch(() => {});
+  return run;
+}
+
 function load() {
   if (!fs.existsSync(STORE_PATH)) {
-    return { registrations: {}, ipCounters: {} };
+    return { registrations: {}, ipCounters: {}, reservations: {} };
   }
-  return JSON.parse(fs.readFileSync(STORE_PATH, 'utf8'));
+  const store = JSON.parse(fs.readFileSync(STORE_PATH, 'utf8'));
+  // Backward compatibility with stores created by older EasyVPN versions.
+  store.registrations ||= {};
+  store.ipCounters ||= {};
+  store.reservations ||= {};
+  return store;
 }
 
 function save(store) {
@@ -32,29 +48,92 @@ function getRegistration(devicePublicKey, serverId) {
   return store.registrations[registrationKey(devicePublicKey, serverId)] || null;
 }
 
-/** Returns the next free host number (2-254) for a server's /24 subnet and
- *  reserves it. Simple incrementing allocator -- no reuse of freed addresses
- *  yet, which is fine up to ~250 registrations per server; worth upgrading to
- *  a free-list if you outgrow that on any single VPS. */
-function allocateAddress(serverId) {
-  const store = load();
-  const next = store.ipCounters[serverId] || 2;
-  if (next > 254) {
-    throw new Error(`Server ${serverId} has run out of addresses in its /24 subnet`);
-  }
-  store.ipCounters[serverId] = next + 1;
-  save(store);
-  return next;
+/**
+ * Atomically reserves the next WireGuard host address for a device/server.
+ *
+ * Why this exists instead of a simple allocateAddress(): two HTTP requests can
+ * otherwise both execute load() before either executes save(), read the same
+ * counter, and assign the same IP. Reservations are persisted so the address
+ * remains taken while the API is waiting for the VPS agent to add the peer.
+ *
+ * Returns { assignedAddress, created } where created is true only for the
+ * request that created the reservation. A repeated concurrent request gets
+ * the same reservation and must not release it if its own agent call fails.
+ */
+async function reserveAddress(devicePublicKey, serverId, subnetBase, maxRegistrations = Infinity) {
+  return withMutationLock(() => {
+    const store = load();
+    const key = registrationKey(devicePublicKey, serverId);
+
+    const existing = store.registrations[key];
+    if (existing) {
+      return { assignedAddress: existing.assignedAddress, created: false, existing: true };
+    }
+
+    const reservation = store.reservations[key];
+    if (reservation) {
+      return { assignedAddress: reservation.assignedAddress, created: false, existing: false };
+    }
+
+    const registrationCount = Object.values(store.registrations)
+      .filter((reg) => reg.serverId === serverId).length;
+    const reservationCount = Object.values(store.reservations)
+      .filter((res) => res.serverId === serverId).length;
+
+    if (registrationCount + reservationCount >= maxRegistrations) {
+      throw new Error(`Server ${serverId} has reached its registration capacity`);
+    }
+
+    const next = store.ipCounters[serverId] || 2;
+    if (next > 254) {
+      throw new Error(`Server ${serverId} has run out of addresses in its /24 subnet`);
+    }
+
+    const assignedAddress = `${subnetBase}.${next}`;
+    store.ipCounters[serverId] = next + 1;
+    store.reservations[key] = {
+      serverId,
+      assignedAddress,
+      createdAt: new Date().toISOString(),
+    };
+    save(store);
+
+    return { assignedAddress, created: true, existing: false };
+  });
 }
 
-function saveRegistration(devicePublicKey, serverId, assignedAddress) {
-  const store = load();
-  store.registrations[registrationKey(devicePublicKey, serverId)] = {
-    serverId,
-    assignedAddress,
-    createdAt: new Date().toISOString(),
-  };
-  save(store);
+/** Release only a reservation created for this exact registration key. */
+async function releaseReservation(devicePublicKey, serverId) {
+  return withMutationLock(() => {
+    const store = load();
+    const key = registrationKey(devicePublicKey, serverId);
+    if (!store.reservations[key]) return false;
+    delete store.reservations[key];
+    save(store);
+    return true;
+  });
+}
+
+/**
+ * Finalizes a reservation after the VPS agent has successfully installed the
+ * peer. Registration and reservation removal happen in one locked write.
+ */
+async function saveRegistration(devicePublicKey, serverId, assignedAddress) {
+  return withMutationLock(() => {
+    const store = load();
+    const key = registrationKey(devicePublicKey, serverId);
+    const existing = store.registrations[key];
+    if (existing) return existing;
+
+    store.registrations[key] = {
+      serverId,
+      assignedAddress,
+      createdAt: new Date().toISOString(),
+    };
+    delete store.reservations[key];
+    save(store);
+    return store.registrations[key];
+  });
 }
 
 /** Counts how many devices are registered on each server, plus the total. */
@@ -69,4 +148,10 @@ function registrationCounts() {
   return { byServer, total };
 }
 
-module.exports = { getRegistration, allocateAddress, saveRegistration, registrationCounts };
+module.exports = {
+  getRegistration,
+  reserveAddress,
+  releaseReservation,
+  saveRegistration,
+  registrationCounts,
+};

@@ -56,14 +56,12 @@ screen. **Or**, for automatic registration with zero manual work per VPS, use
 
 ## 3. Registering users — two modes
 
-### Mode A: Manual (fine for a small beta / friends & family)
+### Mode A: Manual
 
-Each app install generates its own key and derives a unique tunnel address.
-Register each device on each VPS:
-
-```bash
-sudo bash server-setup/add-client.sh <public_key> <address>/32
-```
+The old client-side hash-based address assignment has been removed. It could
+collide between users and was not authoritative for the WireGuard server.
+Production builds therefore require the automatic backend registration flow
+below, which atomically allocates each device a unique tunnel address.
 
 ### Mode B: Automatic backend (recommended — this is what's baked into the app right now)
 

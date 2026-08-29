@@ -6,12 +6,9 @@ package com.easyvpn.app.data
  *
  * endpoint       -> "your.vps.ip.address:51820"
  * serverPublicKey-> WireGuard public key of the VPS (from `wg show` on the server)
- * clientAddress  -> the SUBNET this server's clients live in, e.g. "10.8.0.0/24"
- *                    (matches setup-wireguard.sh's default). This is shared by every
- *                    device that installs the app -- each device's actual unique
- *                    address within it is derived on-device (see DeviceAddressUtil),
- *                    so two different users connecting to the same server don't both
- *                    end up claiming the same tunnel IP.
+ * clientAddress  -> the server-side client subnet, e.g. "10.8.0.0/24".
+ *                    The actual per-device address is allocated atomically by the
+ *                    backend API and returned during registration.
  * presharedKey   -> optional extra layer, can be blank
  * dns            -> DNS to use inside tunnel, e.g. "1.1.1.1"
  */

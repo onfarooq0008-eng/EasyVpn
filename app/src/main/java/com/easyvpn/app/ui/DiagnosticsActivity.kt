@@ -44,7 +44,7 @@ class DiagnosticsActivity : AppCompatActivity() {
             val lines = mutableListOf<String>()
             val tunnelManager = VpnTunnelManagerHolder.get(this@DiagnosticsActivity)
             val systemVpnActive = VpnStateUtil.isSystemVpnActive(this@DiagnosticsActivity)
-            tunnelManager.syncStateFromSystem(systemVpnActive)
+            tunnelManager.syncStateFromBackend()
 
             lines += "VPN interface: ${if (systemVpnActive) "UP" else "DOWN"}"
 
@@ -64,7 +64,7 @@ class DiagnosticsActivity : AppCompatActivity() {
             lines += ""
             lines += "Backend mode: ${if (appSettings.backendApiUrl.isNotBlank()) "ON (${appSettings.backendApiUrl})" else "OFF (local server list)"}"
             lines += "Last connected server id: ${appSettings.lastConnectedServerId ?: "none"}"
-            lines += "Kill switch preference: ${if (appSettings.killSwitchEnabled) "ON" else "OFF"}"
+            lines += "Kill switch: Android system lockdown (check VPN settings)"
             lines += "DNS: ${appSettings.dnsMode} (${appSettings.resolveDns("server default")})"
             lines += "Split tunneling exclusions: ${appSettings.excludedPackages.size} app(s)"
 

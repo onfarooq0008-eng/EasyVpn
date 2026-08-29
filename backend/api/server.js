@@ -176,15 +176,12 @@ app.post('/api/register', rateLimit(20, 60_000), async (req, res) => {
   let server;
   if (preferredServerId) {
     server = servers.find((s) => s.id === preferredServerId);
-    if (server && !hasCapacity(server) && !store.getRegistration(devicePublicKey, server.id)) {
-      // Only reject for capacity if this would be a NEW registration -- an
-      // already-registered device asking again still gets its existing slot
-      // back below (idempotent), a full server doesn't kick anyone out.
-      return res.status(503).json({ error: 'that server is at capacity, try another' });
+    if (!server) {
+      return res.status(404).json({ error: 'no matching server available' });
     }
   } else {
     const withCapacity = servers.filter(hasCapacity);
-    const pool = withCapacity.length > 0 ? withCapacity : servers; // degrade gracefully if all are full
+    const pool = withCapacity.length > 0 ? withCapacity : servers; // reserveAddress performs the final atomic capacity check
     server = pool[Math.floor(Math.random() * pool.length)];
   }
 
@@ -200,8 +197,20 @@ app.post('/api/register', rateLimit(20, 60_000), async (req, res) => {
   }
 
   const subnetBase = (server.clientSubnet || '10.8.0.0/24').split('/')[0].split('.').slice(0, 3).join('.');
-  const hostNumber = store.allocateAddress(server.id);
-  const assignedAddress = `${subnetBase}.${hostNumber}`;
+  let reservation;
+  try {
+    reservation = await store.reserveAddress(
+      devicePublicKey,
+      server.id,
+      subnetBase,
+      MAX_REGISTRATIONS_PER_SERVER
+    );
+  } catch (err) {
+    console.error(`Failed to reserve address on ${server.id}:`, err.message);
+    return res.status(503).json({ error: 'that server is at capacity, try another' });
+  }
+
+  const assignedAddress = reservation.assignedAddress;
 
   try {
     const agentResp = await fetch(`${server.agentUrl}/add-peer`, {
@@ -214,11 +223,16 @@ app.post('/api/register', rateLimit(20, 60_000), async (req, res) => {
       throw new Error(`agent responded ${agentResp.status}: ${detail}`);
     }
   } catch (err) {
+    // Only the request that created the reservation may release it. A
+    // concurrent duplicate request can safely keep using the same address.
+    if (reservation.created) {
+      await store.releaseReservation(devicePublicKey, server.id);
+    }
     console.error(`Failed to register peer on ${server.id}:`, err.message);
     return res.status(502).json({ error: 'failed to register with VPS agent', detail: err.message });
   }
 
-  store.saveRegistration(devicePublicKey, server.id, assignedAddress);
+  await store.saveRegistration(devicePublicKey, server.id, assignedAddress);
   res.json(buildResponse(server, assignedAddress));
 });
 
