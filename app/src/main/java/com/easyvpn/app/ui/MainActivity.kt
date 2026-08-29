@@ -26,7 +26,6 @@ import com.easyvpn.app.databinding.ActivityMainBinding
 import com.easyvpn.app.util.NotificationHelper
 import com.easyvpn.app.util.PingUtil
 import com.easyvpn.app.util.SecureKeyStore
-import com.easyvpn.app.util.VpnStateUtil
 import com.easyvpn.app.vpn.TunnelState
 import com.easyvpn.app.vpn.VpnTunnelManager
 import com.easyvpn.app.vpn.VpnTunnelManagerHolder
@@ -116,6 +115,13 @@ class MainActivity : AppCompatActivity() {
         AdManager.loadBanner(binding.adContainer, this)
 
         loadAndPing(onDone = {
+            // Once the server list is loaded, restore the display name for an
+            // already-running VPN. The tunnel state itself is authoritative; the
+            // Activity's connectedServer field is only presentation state.
+            restoreConnectedServerFromSettings()
+            updateStatusCard()
+            updateActionButton()
+
             if (appSettings.autoConnectEnabled && tunnelManager.state == TunnelState.DOWN) {
                 appSettings.lastConnectedServerId?.let { id ->
                     allServers.find { it.id == id }?.let { onServerTapped(it) }
@@ -140,19 +146,17 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
 
-        // The actual tunnel is owned by the OS, not this Activity -- if the app was
-        // backgrounded/recreated while still connected, resync to reality instead of
-        // wrongly showing "Not connected" just because our in-memory state reset.
-        val systemActive = VpnStateUtil.isSystemVpnActive(this)
+        // The backend tunnel state is authoritative for EasyVPN. Android's generic
+        // VPN transport flag is useful as a secondary signal, but it cannot tell us
+        // which VPN belongs to this app. Most importantly, never let a missing
+        // Activity-level connectedServer turn an actually-running tunnel into a
+        // disconnected UI state.
+        val wasConnected = tunnelManager.state == TunnelState.UP
         tunnelManager.syncStateFromBackend()
-        if (systemActive && connectedServer == null) {
-            appSettings.lastConnectedServerId?.let { id ->
-                allServers.find { it.id == id }?.let {
-                    connectedServer = it
-                    startConnectionStats()
-                }
-            }
-        } else if (!systemActive && connectedServer != null) {
+        if (tunnelManager.state == TunnelState.UP) {
+            restoreConnectedServerFromSettings()
+            if (!wasConnected) startConnectionStats()
+        } else if (wasConnected) {
             connectedServer = null
             stopConnectionStats()
         }
@@ -230,8 +234,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun onActionButtonTapped() {
         if (tunnelManager.state == TunnelState.UP) {
-            val server = connectedServer ?: return
-            onServerTapped(server) // same server tapped again -> disconnects
+            // Do not require connectedServer here. That field belongs to the Activity
+            // and is lost when the Activity is recreated, while the WireGuard tunnel
+            // can still be running. The notification can disconnect successfully in
+            // exactly this situation, so the home button must do the same.
+            lifecycleScope.launch {
+                val result = tunnelManager.disconnect()
+                result.onSuccess {
+                    onDisconnected()
+                }.onFailure {
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "Could not disconnect VPN: ${it.message ?: "unknown error"}",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    // Re-read the manager state so the button never lies about the
+                    // actual tunnel state after a failed disconnect attempt.
+                    tunnelManager.syncStateFromBackend()
+                    updateStatusCard()
+                    updateActionButton()
+                }
+            }
         } else {
             connectToFastest()
         }
@@ -378,6 +401,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun restoreConnectedServerFromSettings() {
+        if (tunnelManager.state != TunnelState.UP || connectedServer != null) return
+        appSettings.lastConnectedServerId?.let { id ->
+            allServers.find { it.id == id }?.let {
+                connectedServer = it
+                startConnectionStats()
+            }
+        }
+    }
+
     private fun tryNextOrFail(chain: List<Server>, attemptIndex: Int, errorIfLast: String?) {
         val nextIndex = attemptIndex + 1
         if (nextIndex < chain.size) {
@@ -402,12 +435,22 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatusCard() {
         val server = connectedServer
-        if (server != null) {
-            binding.textConnectionStatus.text = "Connected"
-            binding.textConnectionSubtitle.text = "${server.flagEmoji()} ${server.name} • ${server.countryName}"
-        } else {
-            binding.textConnectionStatus.text = "Not connected"
-            binding.textConnectionSubtitle.text = "Choose a server below"
+        when {
+            server != null && tunnelManager.state == TunnelState.UP -> {
+                binding.textConnectionStatus.text = "Connected"
+                binding.textConnectionSubtitle.text = "${server.flagEmoji()} ${server.name} • ${server.countryName}"
+            }
+            tunnelManager.state == TunnelState.UP -> {
+                // The VPN is definitely up even when the Activity has not yet
+                // recovered the server metadata. Never display "Not connected"
+                // while simultaneously offering a working Disconnect action.
+                binding.textConnectionStatus.text = "Connected"
+                binding.textConnectionSubtitle.text = "VPN active"
+            }
+            else -> {
+                binding.textConnectionStatus.text = "Not connected"
+                binding.textConnectionSubtitle.text = "Choose a server below"
+            }
         }
     }
 
