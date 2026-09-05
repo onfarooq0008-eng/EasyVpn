@@ -1,4 +1,4 @@
-// EasyVPN control API -- the "brain" that the app talks to, and that each
+// FastVPN control API -- the "brain" that the app talks to, and that each
 // VPS's setup.sh registers itself with automatically. Deploy this on ONE
 // machine (any one of your VPS, or a separate small box). It never touches
 // WireGuard directly; it tells the right VPS's *agent* to do that.
@@ -20,6 +20,15 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 // against both a genuine capacity problem and a malicious client trying to
 // register unlimited fake devices to exhaust the address pool.
 const MAX_REGISTRATIONS_PER_SERVER = 200;
+
+// A device that force-kills the app, uninstalls, or has its process killed by
+// the OS before a normal disconnect never calls /api/unregister -- its
+// registration would otherwise sit here forever, permanently eating one of
+// the MAX_REGISTRATIONS_PER_SERVER slots for a device that isn't actually
+// using it. 30 days is generous (VPN clients can legitimately stay connected
+// or reconnect over that span without ever re-registering, since /api/register
+// is idempotent), while still eventually reclaiming genuinely abandoned slots.
+const STALE_REGISTRATION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // Auto-generates its own admin key on first run -- nothing to configure by
 // hand before starting this. setup.sh reads this file afterwards to show you
@@ -60,20 +69,51 @@ const app = express();
 app.set('trust proxy', 'loopback');
 
 app.use(express.json({ limit: '10kb' })); // small, deliberate cap -- nothing we accept needs to be bigger
+
+// Every response here is either live server/registration state (which
+// changes constantly) or the dashboard shell that reads it -- none of it
+// should ever be cached. Without this, Express sends no Cache-Control at
+// all, and some mobile browsers then reuse a stale cached response for a
+// GET to the same URL (e.g. the dashboard's 10s poll of /api/admin/dashboard)
+// even though the underlying data has since changed -- e.g. right after a
+// full backend wipe/reinstall, an old cached response can make the
+// dashboard briefly show pre-wipe data again despite the server having
+// none. `no-store` forbids caching it anywhere, full stop.
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 app.use(express.static(PUBLIC_DIR));
 
 // express.static only auto-serves a file literally named "index.html" for
-// the root URL -- ours is dashboard.html, so this explicit route is needed
-// or GET / returns 404 "Cannot GET /".
+// the root URL -- that's now our public marketing page (public/index.html).
+// The admin panel lives at /adminui instead, not on public root, so it isn't
+// the first thing a random visitor to the domain lands on.
 app.get('/', (req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
+
+app.get('/adminui', (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'adminui.html'));
+});
+
+// Anyone with the old /dashboard.html bookmark (from before the admin panel
+// moved) lands in the right place instead of a 404.
+app.get('/dashboard.html', (req, res) => res.redirect(301, '/adminui'));
 
 function requireAdminKey(req, res, next) {
   if (req.header('X-Admin-Key') !== adminConfig.adminKey) {
     return res.status(401).json({ error: 'invalid or missing X-Admin-Key' });
   }
   next();
+}
+
+// Accepts the long-lived X-Admin-Key (used by setup.sh, machine to machine --
+// no browser involved -- and also by the dashboard's login form).
+async function requireAdminAccess(req, res, next) {
+  if (req.header('X-Admin-Key') === adminConfig.adminKey) return next();
+  return res.status(401).json({ error: 'invalid or missing admin credentials' });
 }
 
 async function checkAgentHealth(agentUrl, agentApiKey) {
@@ -85,43 +125,129 @@ async function checkAgentHealth(agentUrl, agentApiKey) {
       signal: controller.signal,
     });
     clearTimeout(timeout);
-    if (!resp.ok) return { healthy: false, peerCount: -1 };
+    if (!resp.ok) return { healthy: false, peerCount: -1, activePeerCount: -1 };
     const body = await resp.json();
-    return { healthy: !!body.ok, peerCount: body.peerCount ?? -1 };
+    return {
+      healthy: !!body.ok,
+      peerCount: body.peerCount ?? -1,
+      activePeerCount: body.activePeerCount ?? -1,
+    };
   } catch (e) {
-    return { healthy: false, peerCount: -1 };
+    return { healthy: false, peerCount: -1, activePeerCount: -1 };
   }
 }
 
-// Dashboard data -- the web UI (public/dashboard.html) polls this. Checks
-// every VPS's agent live, so "connected" really means reachable right now,
-// not just "was registered at some point."
-app.get('/api/admin/dashboard', rateLimit(60, 60_000), requireAdminKey, async (req, res) => {
+// --- Health cache ------------------------------------------------------------
+// Previously, EVERY dashboard load/poll called checkAgentHealth() live, for
+// every registered server, on every single request -- with N servers and a
+// 4s-per-check timeout, that meant every open dashboard tab (polling every
+// 10s) fired N outbound network calls each time, and the whole thing got
+// slower and less reliable the more VPS you added (and easier to accidentally
+// trip the rate limiter with a couple of tabs open). Now only the background
+// sweep below ever calls an agent directly; every request-time consumer
+// (dashboard, capacity checks) just reads this in-memory cache, so responses
+// are instant and adding more VPS never slows anything down.
+const healthCache = new Map(); // serverId -> { healthy, peerCount, activePeerCount, checkedAt }
+
+async function refreshServerHealth(server) {
+  const health = await checkAgentHealth(server.agentUrl, server.agentApiKey);
+  healthCache.set(server.id, { ...health, checkedAt: Date.now() });
+  return health;
+}
+
+function getCachedHealth(serverId) {
+  return healthCache.get(serverId) || { healthy: false, peerCount: -1, activePeerCount: -1, checkedAt: null };
+}
+
+// --- Auto-remove offline VPS ------------------------------------------------
+// Runs in the background regardless of whether anyone has the dashboard open.
+// A VPS that's been destroyed, reimaged, or just firewalled off is worse than
+// no server at all: the app would keep offering it to users who then fail to
+// connect. One bad check isn't enough to act on (a single dropped health
+// request happens); OFFLINE_REMOVAL_THRESHOLD consecutive failures is. To add
+// it back, just re-run setup.sh --role node on it -- that re-registers it.
+const HEALTH_SWEEP_INTERVAL_MS = 60_000;
+const OFFLINE_REMOVAL_THRESHOLD = 3;
+const consecutiveFailures = new Map(); // serverId -> count (in-memory, resets on restart)
+
+async function runHealthSweep() {
+  const servers = serverStore.loadServers();
+  // Checked concurrently (same as the old per-dashboard-request check was)
+  // so a growing server list doesn't make each sweep take proportionally
+  // longer -- worst case is still just the slowest single agent's timeout.
+  await Promise.all(servers.map(async (s) => {
+    const health = await refreshServerHealth(s);
+    if (health.healthy) {
+      consecutiveFailures.delete(s.id);
+      return;
+    }
+    const failures = (consecutiveFailures.get(s.id) || 0) + 1;
+    if (failures >= OFFLINE_REMOVAL_THRESHOLD) {
+      consecutiveFailures.delete(s.id);
+      const removed = await serverStore.removeServer(s.id);
+      if (removed) {
+        console.log(
+          `Removed ${s.id} (${s.countryName}) -- unreachable for ${OFFLINE_REMOVAL_THRESHOLD} consecutive checks (~${Math.round((OFFLINE_REMOVAL_THRESHOLD * HEALTH_SWEEP_INTERVAL_MS) / 60000)} min)`
+        );
+      }
+    } else {
+      consecutiveFailures.set(s.id, failures);
+    }
+  }));
+}
+
+let sweepRunning = false;
+function triggerHealthSweep() {
+  if (sweepRunning) return; // don't overlap sweeps if one is still checking a slow/unreachable agent
+  sweepRunning = true;
+  runHealthSweep()
+    .catch((err) => console.error('Health sweep failed:', err.message))
+    .finally(() => { sweepRunning = false; });
+}
+setInterval(triggerHealthSweep, HEALTH_SWEEP_INTERVAL_MS);
+triggerHealthSweep(); // also run once immediately at startup, instead of leaving the dashboard showing everything as unhealthy for up to the first 60s
+
+// Dashboard data -- the web UI (public/dashboard.html) polls this. Reads the
+// health cache (refreshed every HEALTH_SWEEP_INTERVAL_MS in the background),
+// so "connected" reflects the last sweep -- at most ~60s old, not a live
+// check on every request. See the health cache comment above for why.
+app.get('/api/admin/dashboard', rateLimit(120, 60_000), requireAdminAccess, (req, res) => {
   const servers = serverStore.loadServers();
   const counts = store.registrationCounts();
 
-  const withHealth = await Promise.all(
-    servers.map(async (s) => {
-      const health = await checkAgentHealth(s.agentUrl, s.agentApiKey);
-      return {
-        id: s.id,
-        name: s.name,
-        countryName: s.countryName,
-        countryCode: s.countryCode,
-        city: s.city,
-        endpointHost: s.endpointHost,
-        endpointPort: s.endpointPort,
-        healthy: health.healthy,
-        peerCount: health.peerCount,
-        registeredDevices: counts.byServer[s.id] || 0,
-      };
-    })
+  // Reads the health cache kept warm by the background sweep (see above)
+  // instead of calling every VPS agent live -- this makes the response
+  // instant no matter how many VPS are registered, and keeps multiple open
+  // dashboard tabs (each polling every 10s) comfortably under the rate limit.
+  const withHealth = servers.map((s) => {
+    const health = getCachedHealth(s.id);
+    return {
+      id: s.id,
+      name: s.name,
+      countryName: s.countryName,
+      countryCode: s.countryCode,
+      city: s.city,
+      endpointHost: s.endpointHost,
+      endpointPort: s.endpointPort,
+      healthy: health.healthy,
+      peerCount: health.peerCount,
+      activePeerCount: health.activePeerCount,
+      registeredDevices: counts.byServer[s.id] || 0,
+      maxRegistrations: MAX_REGISTRATIONS_PER_SERVER,
+      lastCheckedAt: health.checkedAt,
+    };
+  });
+
+  const totalConnectedDevices = withHealth.reduce(
+    (sum, s) => sum + (s.activePeerCount > 0 ? s.activePeerCount : 0),
+    0
   );
 
   res.json({
     servers: withHealth,
     totalServers: servers.length,
     totalRegisteredDevices: counts.total,
+    totalConnectedDevices,
   });
 });
 
@@ -152,6 +278,56 @@ app.post('/api/admin/add-server', rateLimit(10, 60_000), requireAdminKey, async 
   const saved = await serverStore.upsertServer(entry);
   console.log(`Registered server ${saved.id} (${saved.countryName})`);
   res.json({ ok: true, id: saved.id });
+  // Check it right away instead of leaving it as "unhealthy" in the cache
+  // until the next scheduled sweep (up to 60s) -- so a freshly-added VPS
+  // shows up correctly on the dashboard within a couple of seconds.
+  refreshServerHealth(saved).catch((err) =>
+    console.error(`Initial health check for ${saved.id} failed:`, err.message)
+  );
+});
+
+// Lets an admin rename a server / fix its displayed country or city without
+// re-running setup.sh on the VPS -- connection fields (host, keys, agent
+// creds) are intentionally not editable here, see serverStore.updateServer.
+app.post('/api/admin/update-server', rateLimit(30, 60_000), requireAdminAccess, async (req, res) => {
+  const { id, name, countryName, countryCode, city, dns } = req.body || {};
+  if (typeof id !== 'string' || !id) return res.status(400).json({ error: 'missing id' });
+  if (countryCode !== undefined && countryCode !== '' && !/^[A-Za-z]{2}$/.test(countryCode)) {
+    return res.status(400).json({ error: 'countryCode must be 2 letters' });
+  }
+  const updated = await serverStore.updateServer(id, {
+    name, countryName, countryCode: countryCode ? countryCode.toUpperCase() : undefined, city, dns,
+  });
+  if (!updated) return res.status(404).json({ error: 'server not found' });
+  res.json({ ok: true, server: updated });
+});
+
+// Manually drops a VPS from the list -- e.g. you're decommissioning it on
+// purpose, rather than waiting for the health sweep to notice it's gone.
+// Existing devices registered on it keep their local WireGuard config and
+// can still connect directly until you shut the box down; they just won't
+// be offered as a choice to new registrations anymore.
+app.post('/api/admin/remove-server', rateLimit(30, 60_000), requireAdminAccess, async (req, res) => {
+  const { id } = req.body || {};
+  if (typeof id !== 'string' || !id) return res.status(400).json({ error: 'missing id' });
+  const removed = await serverStore.removeServer(id);
+  if (!removed) return res.status(404).json({ error: 'server not found' });
+  healthCache.delete(id);
+  consecutiveFailures.delete(id);
+  res.json({ ok: true });
+});
+
+// On-demand health check for one server -- lets the dashboard show a fresh
+// result immediately (e.g. right after you've fixed something on that VPS)
+// instead of waiting up to HEALTH_SWEEP_INTERVAL_MS for the next background
+// sweep to get to it.
+app.post('/api/admin/recheck-server', rateLimit(30, 60_000), requireAdminAccess, async (req, res) => {
+  const { id } = req.body || {};
+  const server = serverStore.getServer(id);
+  if (!server) return res.status(404).json({ error: 'server not found' });
+  const health = await refreshServerHealth(server);
+  consecutiveFailures.delete(server.id); // manual recheck resets the offline-removal counter
+  res.json({ ok: true, health });
 });
 
 // Public: what the app's server list shows. Deliberately excludes agentUrl
@@ -187,9 +363,24 @@ app.post('/api/register', rateLimit(20, 60_000), async (req, res) => {
 
   let server;
   if (preferredServerId) {
-    server = servers.find((s) => s.id === preferredServerId);
-    if (!server) {
-      return res.status(404).json({ error: 'no matching server available' });
+    const preferred = servers.find((s) => s.id === preferredServerId);
+    if (preferred && hasCapacity(preferred)) {
+      server = preferred;
+    } else {
+      // Preferred server doesn't exist, or exists but is full -- rather than
+      // failing the connection attempt (and forcing the app to retry against
+      // a different server itself), automatically fall back to another
+      // available server here. This is what makes app-side failover actually
+      // reliable: previously a full preferred server would pass this check
+      // and only fail later during atomic address reservation below, wasting
+      // a full round trip on a request that could never have succeeded.
+      const remaining = servers.filter((s) => s.id !== preferredServerId);
+      const withCapacity = remaining.filter(hasCapacity);
+      const pool = withCapacity.length > 0 ? withCapacity : remaining;
+      if (pool.length === 0) {
+        return res.status(404).json({ error: 'no matching server available' });
+      }
+      server = pool[Math.floor(Math.random() * pool.length)];
     }
   } else {
     const withCapacity = servers.filter(hasCapacity);
@@ -205,6 +396,7 @@ app.post('/api/register', rateLimit(20, 60_000), async (req, res) => {
   // registered on just gets the same assignment back, no duplicate peers.
   const existing = store.getRegistration(devicePublicKey, server.id);
   if (existing) {
+    await store.touchRegistration(devicePublicKey, server.id);
     return res.json(buildResponse(server, existing.assignedAddress, false, existing.registrationToken || ""));
   }
 
@@ -310,8 +502,57 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`EasyVPN control API listening on port ${PORT}`);
+// Defaults to 0.0.0.0 (all interfaces) for backward compatibility with existing
+// installs. setup.sh sets HOST=127.0.0.1 when a --domain is configured, so the
+// API is only reachable through the local Nginx reverse proxy, never directly
+// from the internet.
+const HOST = process.env.HOST || '0.0.0.0';
+
+// Reclaims registration slots from devices that never called /api/unregister --
+// e.g. the app's process was killed before it could deregister (see
+// MANUAL_TESTING.md). Actually removes the peer from the VPS agent first, not
+// just the local bookkeeping, so a re-used IP never ends up assigned to two
+// peers at once. One unreachable/misbehaving VPS logs an error and does not
+// stop the sweep from pruning stale registrations on other servers.
+async function pruneStaleRegistrations() {
+  const stale = store.findStaleRegistrations(STALE_REGISTRATION_MAX_AGE_MS);
+  if (stale.length === 0) return;
+  console.log(`Pruning ${stale.length} stale registration(s) (unseen for 30+ days)...`);
+  const servers = serverStore.loadServers();
+  for (const reg of stale) {
+    const server = servers.find((s) => s.id === reg.serverId);
+    if (!server) {
+      // Server itself no longer exists -- nothing to tell an agent, just drop the row.
+      await store.removeRegistrationByKey(reg.devicePublicKey, reg.serverId);
+      continue;
+    }
+    try {
+      const agentResp = await fetch(`${server.agentUrl}/remove-peer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': server.agentApiKey },
+        body: JSON.stringify({ publicKey: reg.devicePublicKey }),
+      });
+      if (!agentResp.ok && agentResp.status !== 404) {
+        throw new Error(`agent responded ${agentResp.status}`);
+      }
+      await store.removeRegistrationByKey(reg.devicePublicKey, reg.serverId);
+      console.log(`  pruned stale registration on ${reg.serverId}`);
+    } catch (err) {
+      // Leave this one for the next sweep rather than dropping the row while
+      // the real peer might still exist on an unreachable VPS.
+      console.error(`  failed to prune stale registration on ${reg.serverId}:`, err.message);
+    }
+  }
+}
+
+app.listen(PORT, HOST, () => {
+  console.log(`FastVPN control API listening on ${HOST}:${PORT}`);
   console.log(`Dashboard: http://<this-server-ip>:${PORT}/`);
   console.log(`Admin key (needed once per VPS, printed again by: cat ${ADMIN_CONFIG_PATH}): ${adminConfig.adminKey}`);
+
+  // Run once shortly after startup (not immediately -- give the process a
+  // moment to settle) and then daily. A daily cadence is frequent enough
+  // relative to the 30-day threshold without adding meaningful load.
+  setTimeout(pruneStaleRegistrations, 60_000);
+  setInterval(pruneStaleRegistrations, 24 * 60 * 60 * 1000);
 });
